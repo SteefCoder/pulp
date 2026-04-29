@@ -467,6 +467,134 @@ class ModelUnitTest(unittest.TestCase):
             self.fail("Expected one LE constraint with constant -34.5")
 
 
+class VariableIndirectionTest(unittest.TestCase):
+    """
+    Regression-style tests for LpVariable handles that cross Python call boundaries.
+
+    Patterns such as "create in one helper, return to caller, then pass to another
+    helper" are easy to get wrong with native-backed wrappers; these tests pin
+    expected behavior.
+    """
+
+    def _make_prob(self, name: Optional[str] = None) -> LpProblem:
+        return LpProblem(name or self._testMethodName, const.LpMinimize)
+
+    @staticmethod
+    def _add_named_variable(prob: LpProblem, name: str) -> LpVariable:
+        return prob.add_variable(name, 0, 10)
+
+    def test_variable_from_helper_factory_uses_same_model(self) -> None:
+        prob = self._make_prob()
+        x = self._add_named_variable(prob, "x")
+        m_from_var = x._var.containing_model()
+        m_from_prob = prob.toRustModel()
+        self.assertEqual(m_from_var.num_variables, m_from_prob.num_variables)
+        self.assertEqual(m_from_var.num_variables, 1)
+        self.assertEqual(
+            x._var.model_identity(), prob.variables()[0]._var.model_identity()
+        )
+        prob += x, "obj"
+        m_after = x._var.containing_model()
+        self.assertEqual(m_after.num_variables, 1)
+        self.assertEqual(m_after.num_constraints, 0)
+        self.assertIn("objective=set", m_after.summary())
+
+    def test_variable_passed_to_second_helper_for_objective_and_constraint(
+        self,
+    ) -> None:
+        def build_objective(v1: LpVariable, v2: LpVariable) -> LpAffineExpression:
+            return 2 * v1 + 3 * v2
+
+        def add_leq(prob: LpProblem, v: LpVariable, name: str) -> None:
+            prob += v <= 6, name
+
+        prob = self._make_prob()
+        x = self._add_named_variable(prob, "x")
+        y = self._add_named_variable(prob, "y")
+        prob += build_objective(x, y), "obj"
+        add_leq(prob, y, "cy")
+        names = {c.name for c in prob.constraints()}
+        self.assertEqual(names, {"cy"})
+        rust = prob.toRustModel()
+        self.assertEqual(rust.num_variables, 2)
+        self.assertEqual(rust.num_constraints, 1)
+
+    def test_variable_in_nested_def_closure(self) -> None:
+        def build() -> tuple[LpProblem, LpVariable]:
+            p = LpProblem("closure_case", const.LpMinimize)
+
+            def add_x() -> LpVariable:
+                return p.add_variable("x", 0, 5)
+
+            v = add_x()
+            p += 4 * v, "obj"
+            p += v >= 1, "lo"
+            return p, v
+
+        prob, x = build()
+        self.assertIsInstance(x, LpVariable)
+        self.assertEqual(x.name, "x")
+        m = x._var.containing_model()
+        self.assertEqual(m.num_variables, 1)
+        self.assertEqual(m.num_constraints, 1)
+        for c in prob.constraints():
+            _ = c.items()
+        self.assertIn("x", [v.name for v in prob.variables()])
+
+    def test_higher_order_identity_passthrough(self) -> None:
+        def ident(u: LpVariable) -> LpVariable:
+            return u
+
+        def double_pipe(u: LpVariable) -> LpVariable:
+            return ident(ident(u))
+
+        prob = self._make_prob()
+        x = prob.add_variable("x", 0, 2)
+        y = double_pipe(x)
+        prob += y, "z"
+        self.assertIs(y, x)
+        e = y * 2 + 1
+        d = e.items()
+        self.assertEqual(len(d), 1)
+        self.assertEqual(d[0][0].name, "x")
+
+    def test_variable_forwarded_in_kwargs(self) -> None:
+        def accept(prob: LpProblem, *, a: LpVariable, b: LpVariable) -> None:
+            prob += a + 2 * b, "o"
+            prob += a - b <= 1, "c1"
+
+        prob = self._make_prob()
+        va = prob.add_variable("a", 0, 1)
+        vb = prob.add_variable("b", 0, 1)
+        accept(prob, a=va, b=vb)
+        self.assertEqual(prob.toRustModel().num_constraints, 1)
+
+    def test_tuple_unpack_from_helper_then_constraint(self) -> None:
+        def make_pair(p: LpProblem) -> tuple[LpVariable, LpVariable]:
+            return p.add_variable("p0", 0, 1), p.add_variable("p1", 0, 1)
+
+        def use_them(p: LpProblem, a: LpVariable, b: LpVariable) -> None:
+            p += a + 3 * b, "tobj"
+            p += a + b <= 1, "cxy"
+
+        prob = self._make_prob()
+        u, w = make_pair(prob)
+        use_them(prob, u, w)
+        self.assertEqual({v.name for v in prob.variables()}, {"p0", "p1"})
+
+    def test_list_of_variables_built_in_helper_then_lpSum(self) -> None:
+        def collect_vars(p: LpProblem, n: int) -> list[LpVariable]:
+            return [p.add_variable(f"v{i}", 0, 1) for i in range(n)]
+
+        prob = self._make_prob()
+        vs = collect_vars(prob, 3)
+        prob += lpSum(vs), "sumobj"
+        self.assertEqual(prob.toRustModel().num_variables, 3)
+        s = str(sum(vs, start=0 * vs[0]))
+        self.assertIn("v0", s)
+        self.assertIn("v2", s)
+
+
 class BaseSolverTest:
     class PuLPTest(unittest.TestCase):
         solveInst: Optional[Type[solvers.LpSolver]] = None
