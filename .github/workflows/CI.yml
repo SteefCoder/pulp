@@ -1,17 +1,13 @@
-# Build wheels with maturin and publish to PyPI on tag push.
+# Build wheels with maturin and publish to PyPI when a GitHub Release is published.
+# Runs only on ``release`` (published), not on branch/tag push or pull requests.
 # Generated from maturin generate-ci github, merged with Test PyPI + PyPI publish.
 # To refresh the build matrix, run: maturin generate-ci github
 name: CI
 
 on:
-  push:
-    branches:
-      - main
-      - master
-    tags:
-      - '*'
-  pull_request:
-  workflow_dispatch:
+  release:
+    types:
+      - published
 
 permissions:
   contents: read
@@ -159,7 +155,6 @@ jobs:
   release:
     name: Publish to PyPI
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     needs: [linux, musllinux, windows, macos, sdist]
     permissions:
       contents: read
@@ -179,7 +174,6 @@ jobs:
           fi
           ls -la dist_all
       - name: Publish to Test PyPI
-        if: startsWith(github.ref, 'refs/tags/')
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.test_pypi_password }}
@@ -187,7 +181,6 @@ jobs:
           skip-existing: true
           packages-dir: dist_all
       - name: Publish to PyPI
-        if: startsWith(github.ref, 'refs/tags/')
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.pypi_password }}

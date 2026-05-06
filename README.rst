@@ -194,6 +194,7 @@ Instructions for making your first contribution to PuLP are given `here <https:/
 **Comments, bug reports, patches and suggestions are very welcome!**
 
 * Comments and suggestions: https://github.com/coin-or/pulp/discussions
+* `PuLP Google Group <https://groups.google.com/g/pulp-or-discuss>`_ — community discussion and Q&A
 * Bug reports: https://github.com/coin-or/pulp/issues
 * Patches: https://github.com/coin-or/pulp/pulls
 
